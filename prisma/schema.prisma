@@ -1,0 +1,364 @@
+// Momentum — Prisma schema
+// Encodes the Database Schema & ER Design doc:
+// UUID PKs, soft deletes, audit timestamps, FK constraints, indexes
+// (incl. composites), snake_case plural tables, JSONB only where needed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── enums ──────────────────────────────────────────────────────────
+enum GoalStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+enum HabitFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum EventSource {
+  MOMENTUM
+  APPLE_CALENDAR
+  GOOGLE_CALENDAR
+  OUTLOOK
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+// ── core tables ────────────────────────────────────────────────────
+model User {
+  id                   String    @id @default(uuid()) @db.Uuid
+  name                 String
+  email                String    @unique
+  passwordHash         String?   @map("password_hash")
+  refreshTokenHash     String?   @map("refresh_token_hash") // rotation: hash of current refresh token
+  avatarUrl            String?   @map("avatar_url")
+  timezone             String    @default("UTC")
+  locale               String    @default("en")
+  onboardingCompleted  Boolean   @default(false) @map("onboarding_completed")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+
+  lifeAreas       LifeArea[]
+  goals           Goal[]
+  habits          Habit[]
+  journalEntries  JournalEntry[]
+  calendarEvents  CalendarEvent[]
+  focusSessions   FocusSession[]
+  reflections     Reflection[]
+  aiConversations AiConversation[]
+  momentumScores  MomentumScore[]
+  achievements    Achievement[]
+  notifications   Notification[]
+  settings        UserSettings?
+
+  @@index([createdAt])
+  @@map("users")
+}
+
+model LifeArea {
+  id           String  @id @default(uuid()) @db.Uuid
+  userId       String  @map("user_id") @db.Uuid
+  name         String
+  icon         String
+  color        String
+  displayOrder Int     @map("display_order")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goals Goal[]
+  habits Habit[]
+
+  @@index([userId])
+  @@map("life_areas")
+}
+
+model Goal {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String     @map("user_id") @db.Uuid
+  lifeAreaId  String?    @map("life_area_id") @db.Uuid
+  title       String
+  description String?
+  targetDate  DateTime?  @map("target_date") @db.Date
+  priority    Int        @default(3) @db.SmallInt
+  status      GoalStatus @default(ACTIVE)
+  progress    Int        @default(0)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lifeArea   LifeArea?   @relation(fields: [lifeAreaId], references: [id], onDelete: SetNull)
+  milestones Milestone[]
+  projects   Project[]
+
+  @@index([userId])
+  @@index([lifeAreaId])
+  @@index([status])
+  @@index([targetDate])
+  @@index([userId, status])
+  @@map("goals")
+}
+
+model Milestone {
+  id        String    @id @default(uuid()) @db.Uuid
+  goalId    String    @map("goal_id") @db.Uuid
+  title     String
+  deadline  DateTime? @db.Date
+  completed Boolean   @default(false)
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId])
+  @@map("milestones")
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  goalId      String        @map("goal_id") @db.Uuid
+  title       String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  deadline    DateTime?     @db.Date
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  deletedAt   DateTime?     @map("deleted_at")
+
+  goal  Goal   @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@index([goalId])
+  @@index([goalId, status])
+  @@map("projects")
+}
+
+model Task {
+  id              String    @id @default(uuid()) @db.Uuid
+  projectId       String?   @map("project_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  title           String
+  notes           String?
+  priority        Int       @default(3) @db.SmallInt
+  durationMinutes Int?      @map("duration_minutes")
+  dueDate         DateTime? @map("due_date")
+  completed       Boolean   @default(false)
+  recurring       Boolean   @default(false)
+  momentumPoints  Int       @default(10) @map("momentum_points")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  focusSessions FocusSession[]
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([completed])
+  @@index([dueDate])
+  @@index([userId, dueDate])
+  @@map("tasks")
+}
+
+model Habit {
+  id           String         @id @default(uuid()) @db.Uuid
+  userId       String         @map("user_id") @db.Uuid
+  lifeAreaId   String?        @map("life_area_id") @db.Uuid
+  title        String
+  frequency    HabitFrequency @default(DAILY)
+  reminderTime String?        @map("reminder_time") // "HH:MM"
+  streak       Int            @default(0)
+  bestStreak   Int            @default(0) @map("best_streak")
+  active       Boolean        @default(true)
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  deletedAt    DateTime?      @map("deleted_at")
+
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lifeArea LifeArea?  @relation(fields: [lifeAreaId], references: [id], onDelete: SetNull)
+  logs     HabitLog[]
+
+  @@index([userId])
+  @@map("habits")
+}
+
+model HabitLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  habitId        String   @map("habit_id") @db.Uuid
+  completedAt    DateTime @default(now()) @map("completed_at")
+  notes          String?
+  momentumPoints Int      @default(10) @map("momentum_points")
+
+  habit Habit @relation(fields: [habitId], references: [id], onDelete: Cascade)
+
+  @@index([habitId, completedAt])
+  @@map("habit_logs")
+}
+
+model JournalEntry {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  title     String?
+  content   String
+  mood      Int?      @db.SmallInt
+  aiSummary String?   @map("ai_summary")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("journal_entries")
+}
+
+model CalendarEvent {
+  id        String      @id @default(uuid()) @db.Uuid
+  userId    String      @map("user_id") @db.Uuid
+  title     String
+  source    EventSource @default(MOMENTUM)
+  startTime DateTime    @map("start_time")
+  endTime   DateTime    @map("end_time")
+  location  String?
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+  deletedAt DateTime?   @map("deleted_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startTime])
+  @@map("calendar_events")
+}
+
+model FocusSession {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  taskId      String?   @map("task_id") @db.Uuid
+  duration    Int       // minutes
+  startedAt   DateTime  @default(now()) @map("started_at")
+  endedAt     DateTime? @map("ended_at")
+  interrupted Boolean   @default(false)
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task Task? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([userId, startedAt])
+  @@map("focus_sessions")
+}
+
+model Reflection {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  productivityScore Int?     @map("productivity_score") @db.SmallInt
+  wins              String?
+  improvements      String?
+  gratitude         String?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("reflections")
+}
+
+model AiConversation {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  title     String   @default("New conversation")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages AiMessage[]
+
+  @@index([userId])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String      @id @default(uuid()) @db.Uuid
+  conversationId String      @map("conversation_id") @db.Uuid
+  role           MessageRole
+  content        String
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("ai_messages")
+}
+
+model MomentumScore {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  points     Int
+  reason     String
+  sourceType String?  @map("source_type") // Habit | Task | Focus | Journal
+  sourceId   String?  @map("source_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("momentum_scores")
+}
+
+model Achievement {
+  id       String   @id @default(uuid()) @db.Uuid
+  userId   String   @map("user_id") @db.Uuid
+  badge    String
+  earnedAt DateTime @default(now()) @map("earned_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("achievements")
+}
+
+model Notification {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  title       String
+  body        String
+  delivered   Boolean   @default(false)
+  readAt      DateTime? @map("read_at")
+  scheduledAt DateTime  @default(now()) @map("scheduled_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, scheduledAt])
+  @@map("notifications")
+}
+
+model UserSettings {
+  id                   String  @id @default(uuid()) @db.Uuid
+  userId               String  @unique @map("user_id") @db.Uuid
+  theme                String  @default("system")
+  aiPersonality        String  @default("strategic") @map("ai_personality")
+  notificationsEnabled Boolean @default(true) @map("notifications_enabled")
+  dailyBriefTime       String  @default("07:00") @map("daily_brief_time")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
