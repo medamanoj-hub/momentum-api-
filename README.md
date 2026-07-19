@@ -1,64 +1,55 @@
-# Momentum API — NestJS Backend
+# Momentum — Web (Phase 1 · Core App)
 
-Implementation of the Momentum v1 API Specification, Database Schema & ER Design, and Technical Architecture docs. Pairs with the `momentum-web` frontend (point its `NEXT_PUBLIC_API_URL` at this server).
+AI-powered Life Operating System. Next.js implementation of the Momentum PRD (doc pages 1–70), feature-equivalent to the mobile app for Phase 1 and matching the reference design system.
 
 ## Run it
 
 ```bash
 npm install
-cp .env.example .env          # adjust JWT_SECRET etc.
-npm run db:up                 # starts Postgres 16 via Docker
-npm run prisma:migrate        # creates the schema (prompts for a migration name)
-npm run prisma:seed           # demo user: arjun@momentum.app / momentum123
-npm run start:dev             # http://localhost:3000/api/v1
+npm run dev
+# open http://localhost:3000
 ```
 
-Node 18+, Docker (or any Postgres 16 with DATABASE_URL set).
+Node 18+ required.
 
-## Contract compliance
+## What's implemented
 
-- **Base path** `/api/v1`, REST, versioned. Breaking changes go to `/v2`.
-- **Envelope**: every success → `{ success: true, data, message: "Success" }`; every error → `{ success: false, error: { code, message } }` with spec codes (`TASK_NOT_FOUND`, `UNAUTHORIZED`, `VALIDATION_ERROR`, `RATE_LIMIT_EXCEEDED`, `SYNC_CONFLICT`, …). Implemented once via a global interceptor + exception filter.
-- **Auth**: JWT Bearer access tokens (15m) + refresh rotation (30d). Reuse of a rotated refresh token revokes the session. `/auth/register`, `/login`, `/refresh`, `/logout` are live; `/auth/apple` and `/auth/google` return `OAUTH_NOT_CONFIGURED` until provider credentials are added (verification flow documented in `auth.module.ts`).
-- **Rate limits** per the spec: 100 req/min default, 20 req/min on `/ai/*`, 10 req/min on `/auth/*` (`@nestjs/throttler`).
-- **Endpoints**: users, life-areas, goals (status/lifeArea/priority filters), projects, tasks (incl. `POST /tasks/{id}/complete` → `{momentumPoints}`), habits (incl. `POST /habits/{id}/complete` → `{streak, points}`, `GET /habits/{id}/logs`), journal (incl. `POST /journal/{id}/reflect` → `{summary}`), calendar (+`/calendar/sync`), planner (daily/weekly/monthly), focus (`/focus/start`, `/focus/end`), momentum-score (`{today, weekly, monthly}` + history), insights, ai (chat, daily-brief, weekly/monthly reviews, goal-roadmap, habit suggestions, reflection), notifications, search (universal), settings, widgets/dashboard.
+| Pillar | Route | Notes |
+|---|---|---|
+| Dashboard | `/dashboard` | Momentum Score ring + weekly sparkline, AI Daily Brief, calendar timeline, life areas grid, Today's Mission, checkable tasks, tappable habit rings, focus timer card, achievements |
+| Life | `/life`, `/life/[area]` | All 9 areas · Overview / Goals / Habits / Journal / Analytics tabs per area (consistent structure per the IA) |
+| Planner | `/planner` | Day timeline with time blocks + live "now" line, task manager with add-task and area tagging |
+| AI Coach | `/coach` | Daily Brief + interactive chat with suggested actions (Start Focus Session, etc.) |
+| Focus Mode | `/focus` | Working 25/45/60/90-minute countdown, task attachment, awards Momentum points on completion |
+| Insights | `/insights` | Score history, habit streaks, life balance index, area breakdown, achievements |
+| Profile | `/profile` | Identity, level ring, settings, reset demo data |
+| Search | `/search` | Universal search across tasks, goals, habits, journal, calendar, life areas (GET /search) |
+| Landing | `/` | Public marketing homepage with features, philosophy, and CTAs; footer links to legal pages |
+| Legal | `/privacy`, `/terms` | Plain-language Privacy Policy and Terms of Service |
+| Password reset | `/forgot-password`, `/reset-password` | Full email-based reset flow against /auth/forgot-password and /auth/reset-password |
+| Auth | `/login` | REAL when NEXT_PUBLIC_API_URL is set: register/login store JWTs, the store then boots from the server (`src/lib/remote-state.ts`) and mutations sync via the queue. Guest mode (browser-only) remains available. |
+| Onboarding | `/onboarding` | 6-step flow per UX spec (name → goals → area ratings → habits → schedule → AI summary) |
+| Quick Capture | global (sidebar) | Captures a task from anywhere; keyword auto-categorization stands in for AI filing |
 
-## Database (Prisma → PostgreSQL)
+Momentum Score is live: completing tasks, habits, journal entries, and focus sessions updates the score (and undoing removes points). State persists offline-first in `localStorage`.
 
-`prisma/schema.prisma` encodes the schema doc: UUID PKs, soft deletes (`deleted_at`), audit timestamps, FK constraints with cascade rules, snake_case plural tables, and the indexing strategy including composites (`(user_id, status)`, `(user_id, due_date)`, `(habit_id, completed_at)`, …). Tables: users, life_areas, goals, milestones, projects, tasks, habits, habit_logs, journal_entries, calendar_events, focus_sessions, reflections, ai_conversations, ai_messages, momentum_scores (append-only history with source attribution), achievements, notifications, user_settings.
+## Architecture (matches the Technical Architecture, DB Schema & API Specification docs)
 
-## Momentum Score™ semantics
+- **v1 API client** (`src/lib/client.ts`): full typed implementation of the REST contract — base URL `https://api.momentum.app/v1` (or `http://localhost:3000/api/v1` in dev), Bearer auth with refresh-token rotation on 401, the standard `{success, data, message}` / `{success, false, error: {code, message}}` envelope, `ApiError` with contract error codes (TASK_NOT_FOUND, RATE_LIMIT_EXCEEDED, AI_PROVIDER_UNAVAILABLE, …), and every endpoint group: auth, users, life-areas, goals, projects, tasks (incl. `POST /tasks/{id}/complete` → `{momentumPoints}`), habits (incl. `POST /habits/{id}/complete` → `{streak, points}`), journal (+ `/journal/{id}/reflect`), calendar (+ `/calendar/sync`), planner, focus (`/focus/start`, `/focus/end`), momentum-score (+ history), insights, ai (chat, daily/weekly/monthly reviews, goal-roadmap, habit suggestions, reflection), notifications, search, settings, widgets. DTOs mirror the database schema entities.
+- **Offline-first sync** (`src/lib/sync.ts`): implements the doc's pipeline — Local DB → Sync Queue → API → PostgreSQL. Every mutation applies locally first, then mirrors to the backend; failed calls persist in a localStorage queue and retry on reconnect. Unrecoverable 4xx ops are dropped; 429/5xx/offline are retried, matching the rate-limit rules (100/min default, 20/min AI, 10/min auth).
+- **Backend toggle**: set `NEXT_PUBLIC_API_URL` (see `.env.example`) to enable server sync. Unset, the app runs fully offline against the `LocalAdapter` — no behavior change in the UI either way.
+- **AI as a layer**: `askCoach()` posts to `POST /ai/chat` when a backend is configured and transparently falls back to the local context-aware heuristic when offline or when the provider is unavailable.
+- **Modular**: tasks / habits / goals / journal / calendar / analytics are separate slices of a typed state (`src/lib/types.ts`), managed in `src/lib/store.tsx`.
+- **Design tokens** in `tailwind.config.ts` mirror the reference UI: deep navy background, indigo→violet gradient accent, per-area tint system, ring + sparkline components.
 
-Score is an append-only ledger (`momentum_scores`), never a mutable counter. Completing a task/habit/journal/focus session writes a positive entry with `source_type`/`source_id`; reopening a task writes a negative correction. `GET /momentum-score` aggregates today / weekly avg / monthly avg from the ledger — matching "consistency over perfection."
+## Accessibility & quality floor
 
-## AI layer
+Dark theme with WCAG-conscious contrast, visible keyboard focus rings, `prefers-reduced-motion` respected, responsive from mobile (bottom nav) to desktop (sidebar), loading/empty/error copy per the UX spec.
 
-`AiProviderService` implements the pipeline from the architecture doc: **Context Builder** (reads the user's tasks, habits, goals, calendar, score) → **Prompt Engine** (coach persona: strategic, calm, honest, encouraging — never manipulative or judgmental) → **LLM**. OpenAI is the primary provider when `OPENAI_API_KEY` is set; a deterministic context-aware local coach keeps every `/ai/*` endpoint functional without credentials. Conversations persist to `ai_conversations` / `ai_messages`. Swap or add providers behind the same interface.
+## Remaining backend-dependent work
 
-## Engineering standards
-
-Feature-based modules (one file per feature: controller + service + module), dependency injection throughout, class-validator DTOs, strict typing, global guards. Structure:
-
-```
-src/
-├── main.ts                  # /api/v1 prefix, CORS, validation, envelope, error filter
-├── app.module.ts            # wiring + global JWT guard + throttler
-├── common/                  # envelope interceptor, error filter, ApiException, auth guard
-├── prisma/                  # PrismaService (global)
-└── features/                # auth, users, life-areas, goals, projects, tasks, habits,
-                             # journal, calendar, planner, focus, momentum-score,
-                             # ai (+ ai-provider.service), misc (insights/notifications/
-                             # search/settings/widgets)
-```
-
-## Connect the web app
-
-In `momentum-web/.env.local`:
-```
-NEXT_PUBLIC_API_URL=http://localhost:3000/api/v1
-```
-Run the web app on another port (`npm run dev -- -p 3001`) since the API defaults to 3000. Log in via the seeded account and the frontend's sync queue starts mirroring mutations here.
-
-## Not yet wired (per roadmap phases)
-
-- Apple/Google OAuth verification (needs provider credentials), external calendar/health integrations, APNs/Web Push delivery, Redis caching + background workers, Sentry/OpenTelemetry/Prometheus, file uploads. Reserved future tables (teams, shared_goals, subscriptions, …) intentionally not created yet.
+- Stand up the NestJS backend implementing this contract (the client and sync queue are ready)
+- Live auth flows (Sign in with Apple / Google OAuth redirect handling)
+- Calendar & Health integrations (`/integrations/*` endpoints)
+- Web Push notifications (delivery layer per the notification architecture)
+- Optional: swap the ad-hoc fetch layer for TanStack Query once server state is live
